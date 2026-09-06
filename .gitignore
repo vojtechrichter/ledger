@@ -2,3 +2,6 @@
 /.idea/
 /vendor/
 ledger-roadmap.md
+/.phpunit.cache/
+/coverage-html/
+coverage.xml
