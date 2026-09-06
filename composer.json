@@ -16,7 +16,9 @@
     },
     "autoload": {
         "psr-4": {
-            "Ledger\\": "src/"
+            "Ledger\\": "src/Ledger/",
+            "Identity\\": "src/Identity/",
+            "Shared\\": "src/Shared/"
         }
     },
     "authors": [
