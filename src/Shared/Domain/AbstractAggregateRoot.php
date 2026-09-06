@@ -11,6 +11,8 @@ abstract class AbstractAggregateRoot
 
     public private(set) int $version = 0;
 
+    final public function __construct() {}
+
     /**
      * @param iterable<DomainEventInterface> $history
      * @return static

@@ -28,7 +28,13 @@ final class Account extends AbstractAggregateRoot
     {
         match (true) {
             $event instanceof AccountOpened => $this->applyAccountOpened($event),
+            default => $this->applyNoOp(),
         };
+    }
+
+    private function applyNoOp(): void
+    {
+        ; // noop
     }
 
     private function applyAccountOpened(AccountOpened $event): void
