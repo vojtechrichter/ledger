@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+namespace Shared\Domain;
+
 final readonly class Money
 {
     public function __construct(
