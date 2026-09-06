@@ -9,12 +9,14 @@ final readonly class Money
         public string $currency,
     ) {}
 
+    #[\NoDiscard]
     public function add(self $other): self
     {
         $this->assertMatchingCurrency($other);
         return new self($this->amount + $other->amount, $other->currency);
     }
 
+    #[\NoDiscard]
     public function subtract(self $other): self
     {
         $this->assertMatchingCurrency($other);

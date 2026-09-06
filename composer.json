@@ -34,6 +34,10 @@
     },
     "scripts": {
         "phpstan": "vendor/bin/phpstan analyse -c phpstan.neon --memory-limit=1G",
-        "tests": "export XDEBUG_MODE=coverage && vendor/bin/phpunit --fail-on-warning"
+        "tests": "export XDEBUG_MODE=coverage && vendor/bin/phpunit --fail-on-warning",
+        "ci": [
+            "@phpstan",
+            "@tests"
+        ]
     }
 }
