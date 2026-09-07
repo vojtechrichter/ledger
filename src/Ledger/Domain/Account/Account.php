@@ -7,6 +7,7 @@ namespace Ledger\Domain\Account;
 use Ledger\Domain\Account\Event\AccountOpened;
 use Shared\Domain\AbstractAggregateRoot;
 use Shared\Domain\DomainEventInterface;
+use Shared\Domain\Exception\UnhandledEventException;
 use Shared\Domain\Money;
 
 final class Account extends AbstractAggregateRoot
@@ -28,13 +29,8 @@ final class Account extends AbstractAggregateRoot
     {
         match (true) {
             $event instanceof AccountOpened => $this->applyAccountOpened($event),
-            default => $this->applyNoOp(),
+            default => throw UnhandledEventException::for($this, $event),
         };
-    }
-
-    private function applyNoOp(): void
-    {
-        ; // noop
     }
 
     private function applyAccountOpened(AccountOpened $event): void
