@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Ledger\Domain\Account;
 
 use Ledger\Domain\Account\Event\AccountOpened;
+use Ledger\Domain\Account\Event\MoneyDeposited;
+use Ledger\Domain\Exception\AccountNotOpenException;
 use Shared\Domain\AbstractAggregateRoot;
 use Shared\Domain\DomainEventInterface;
 use Shared\Domain\Exception\UnhandledEventException;
@@ -25,10 +27,19 @@ final class Account extends AbstractAggregateRoot
         return $account;
     }
 
+    public function deposit(Money $amount, \DateTimeImmutable $now): void
+    {
+        if ($this->accountStatus !== AccountStatus::Open) {
+            throw AccountNotOpenException::for($this->accountId, $this->accountStatus);
+        }
+        $this->recordThat(new MoneyDeposited($this->accountId, $amount, $now));
+    }
+
     protected function apply(DomainEventInterface $event): void
     {
         match (true) {
             $event instanceof AccountOpened => $this->applyAccountOpened($event),
+            $event instanceof MoneyDeposited => $this->balance = $this->balance->add($event->amount),
             default => throw UnhandledEventException::for($this, $event),
         };
     }

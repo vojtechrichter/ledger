@@ -8,11 +8,13 @@ use Ledger\Domain\Account\Account;
 use Ledger\Domain\Account\AccountId;
 use Ledger\Domain\Account\AccountStatus;
 use Ledger\Domain\Account\Event\AccountOpened;
+use Ledger\Domain\Account\Event\MoneyDeposited;
 use Ledger\Domain\Account\OwnerId;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
 use Shared\Domain\AbstractAggregateRoot;
 use Shared\Domain\DomainEventInterface;
+use Shared\Domain\Exception\CurrencyMismatchException;
 use Shared\Domain\Exception\UnhandledEventException;
 use Shared\Domain\Money;
 
@@ -90,5 +92,64 @@ final class AccountTest extends TestCase
         $account = Account::open($this->accountId, $this->ownerId, 'EUR', $this->now);
 
         self::assertSame(0, $account->version);
+    }
+
+    public function testDepositRecordsMoneyDepositedAndRaisesBalance(): void
+    {
+        $account = $this->openAccount();
+
+        $account->deposit(new Money(100, 'EUR'), $this->now);
+
+        $events = $account->releaseEvents();
+        self::assertCount(1, $events);
+        $event = $events[0];
+        self::assertInstanceOf(MoneyDeposited::class, $event);
+        self::assertTrue($event->accountId->equals($this->accountId));
+        self::assertTrue($event->amount->equals(new Money(100, 'EUR')));
+        self::assertSame($this->now, $event->occurredAt);
+        self::assertTrue($account->balance->equals(new Money(100, 'EUR')));
+    }
+
+    public function testDepositsAccumulate(): void
+    {
+        $account = $this->openAccount();
+
+        $account->deposit(new Money(100, 'EUR'), $this->now);
+        $account->deposit(new Money(50, 'EUR'), $this->now);
+
+        self::assertCount(2, $account->releaseEvents());
+        self::assertTrue($account->balance->equals(new Money(150, 'EUR')));
+    }
+
+    public function testDepositInAnotherCurrencyIsRejectedAndRecordsNothing(): void
+    {
+        $account = $this->openAccount();
+
+        try {
+            $account->deposit(new Money(100, 'USD'), $this->now);
+            self::fail('Expected ' . CurrencyMismatchException::class);
+        } catch (CurrencyMismatchException) {
+        }
+
+        self::assertSame([], $account->releaseEvents());
+        self::assertTrue($account->balance->equals(new Money(0, 'EUR')));
+    }
+
+    public function testDepositIsReplayedFromHistory(): void
+    {
+        $account = Account::reconstitute([
+            new AccountOpened($this->accountId, $this->ownerId, 'EUR', $this->now),
+            new MoneyDeposited($this->accountId, new Money(100, 'EUR'), $this->now),
+        ]);
+
+        self::assertSame(2, $account->version);
+        self::assertTrue($account->balance->equals(new Money(100, 'EUR')));
+    }
+
+    private function openAccount(): Account
+    {
+        $account = Account::open($this->accountId, $this->ownerId, 'EUR', $this->now);
+        $account->releaseEvents();
+        return $account;
     }
 }
