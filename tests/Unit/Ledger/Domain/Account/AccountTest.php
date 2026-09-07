@@ -43,7 +43,7 @@ final class AccountTest extends TestCase
         self::assertTrue($event->accountId->equals($this->accountId));
         self::assertTrue($event->ownerId->equals($this->ownerId));
         self::assertSame('EUR', $event->currency);
-        self::assertSame($this->now, $event->occuredAt);
+        self::assertSame($this->now, $event->occurredAt);
     }
 
     public function testOpenedAccountStartsEmptyAndOpen(): void
