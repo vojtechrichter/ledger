@@ -21,6 +21,11 @@
             "Shared\\": "src/Shared/"
         }
     },
+    "autoload-dev": {
+        "psr-4": {
+            "Tests\\": "tests/"
+        }
+    },
     "authors": [
         {
             "name": "vojtechrichter",
