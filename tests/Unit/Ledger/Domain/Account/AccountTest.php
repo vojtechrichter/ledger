@@ -8,8 +8,16 @@ use Ledger\Domain\Account\Account;
 use Ledger\Domain\Account\AccountId;
 use Ledger\Domain\Account\AccountStatus;
 use Ledger\Domain\Account\Event\AccountOpened;
+use Ledger\Domain\Account\Event\HoldCaptured;
+use Ledger\Domain\Account\Event\HoldPlaced;
+use Ledger\Domain\Account\Event\HoldReleased;
 use Ledger\Domain\Account\Event\MoneyDeposited;
+use Ledger\Domain\Account\Event\MoneyWithdrawn;
+use Ledger\Domain\Account\HoldId;
 use Ledger\Domain\Account\OwnerId;
+use Ledger\Domain\Exception\HoldAlreadyPlacedException;
+use Ledger\Domain\Exception\HoldNotFoundException;
+use Ledger\Domain\Exception\InsufficientFundsException;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
 use Shared\Domain\AbstractAggregateRoot;
@@ -144,6 +152,234 @@ final class AccountTest extends TestCase
 
         self::assertSame(2, $account->version);
         self::assertTrue($account->balance->equals(new Money(100, 'EUR')));
+    }
+
+    public function testWithdrawRecordsMoneyWithdrawnAndLowersBalance(): void
+    {
+        $account = $this->accountWithBalance(100);
+
+        $account->withdraw(new Money(30, 'EUR'), $this->now);
+
+        $events = $account->releaseEvents();
+        self::assertCount(1, $events);
+        $event = $events[0];
+        self::assertInstanceOf(MoneyWithdrawn::class, $event);
+        self::assertTrue($event->accountId->equals($this->accountId));
+        self::assertTrue($event->amount->equals(new Money(30, 'EUR')));
+        self::assertSame($this->now, $event->occurredAt);
+        self::assertTrue($account->balance->equals(new Money(70, 'EUR')));
+    }
+
+    public function testWithdrawingExactlyTheAvailableAmountLeavesZero(): void
+    {
+        $account = $this->accountWithBalance(100);
+
+        $account->withdraw(new Money(100, 'EUR'), $this->now);
+
+        self::assertTrue($account->balance->equals(new Money(0, 'EUR')));
+    }
+
+    public function testWithdrawingMoreThanAvailableIsRejectedAndRecordsNothing(): void
+    {
+        $account = $this->accountWithBalance(100);
+
+        $this->assertRejected(
+            InsufficientFundsException::class,
+            fn () => $account->withdraw(new Money(101, 'EUR'), $this->now),
+        );
+
+        self::assertSame([], $account->releaseEvents());
+        self::assertTrue($account->balance->equals(new Money(100, 'EUR')));
+    }
+
+    public function testWithdrawingFromEmptyAccountIsRejected(): void
+    {
+        $account = $this->openAccount();
+
+        $this->expectException(InsufficientFundsException::class);
+
+        $account->withdraw(new Money(1, 'EUR'), $this->now);
+    }
+
+    public function testWithdrawIsReplayedFromHistory(): void
+    {
+        $account = Account::reconstitute([
+            new AccountOpened($this->accountId, $this->ownerId, 'EUR', $this->now),
+            new MoneyDeposited($this->accountId, new Money(100, 'EUR'), $this->now),
+            new MoneyWithdrawn($this->accountId, new Money(30, 'EUR'), $this->now),
+        ]);
+
+        self::assertSame(3, $account->version);
+        self::assertTrue($account->balance->equals(new Money(70, 'EUR')));
+    }
+
+    public function testPlaceHoldReservesMoneyWithoutTouchingBalance(): void
+    {
+        $account = $this->accountWithBalance(100);
+        $holdId = HoldId::generate();
+
+        $account->placeHold($holdId, new Money(30, 'EUR'), $this->now);
+
+        $events = $account->releaseEvents();
+        self::assertCount(1, $events);
+        $event = $events[0];
+        self::assertInstanceOf(HoldPlaced::class, $event);
+        self::assertTrue($event->accountId->equals($this->accountId));
+        self::assertTrue($event->holdId->equals($holdId));
+        self::assertTrue($event->amount->equals(new Money(30, 'EUR')));
+        self::assertSame($this->now, $event->occurredAt);
+        self::assertTrue($account->balance->equals(new Money(100, 'EUR')));
+        self::assertTrue($account->held->equals(new Money(30, 'EUR')));
+        self::assertTrue($account->available()->equals(new Money(70, 'EUR')));
+    }
+
+    public function testMultipleHoldsAccumulate(): void
+    {
+        $account = $this->accountWithBalance(100);
+
+        $account->placeHold(HoldId::generate(), new Money(30, 'EUR'), $this->now);
+        $account->placeHold(HoldId::generate(), new Money(20, 'EUR'), $this->now);
+
+        self::assertTrue($account->held->equals(new Money(50, 'EUR')));
+        self::assertTrue($account->available()->equals(new Money(50, 'EUR')));
+    }
+
+    public function testPlacingHoldBeyondAvailableIsRejectedAndRecordsNothing(): void
+    {
+        $account = $this->accountWithBalance(100);
+        $account->placeHold(HoldId::generate(), new Money(60, 'EUR'), $this->now);
+        $account->releaseEvents();
+
+        $this->assertRejected(
+            InsufficientFundsException::class,
+            fn () => $account->placeHold(HoldId::generate(), new Money(41, 'EUR'), $this->now),
+        );
+
+        self::assertSame([], $account->releaseEvents());
+        self::assertTrue($account->held->equals(new Money(60, 'EUR')));
+    }
+
+    public function testPlacingTheSameHoldTwiceIsRejected(): void
+    {
+        $account = $this->accountWithBalance(100);
+        $holdId = HoldId::generate();
+        $account->placeHold($holdId, new Money(10, 'EUR'), $this->now);
+
+        $this->expectException(HoldAlreadyPlacedException::class);
+
+        $account->placeHold($holdId, new Money(10, 'EUR'), $this->now);
+    }
+
+    public function testWithdrawRespectsHeldAmount(): void
+    {
+        $account = $this->accountWithBalance(100);
+        $account->placeHold(HoldId::generate(), new Money(30, 'EUR'), $this->now);
+
+        $this->assertRejected(
+            InsufficientFundsException::class,
+            fn () => $account->withdraw(new Money(71, 'EUR'), $this->now),
+        );
+
+        $account->withdraw(new Money(70, 'EUR'), $this->now);
+
+        self::assertTrue($account->balance->equals(new Money(30, 'EUR')));
+        self::assertTrue($account->available()->equals(new Money(0, 'EUR')));
+    }
+
+    public function testReleaseHoldMakesMoneyAvailableAgain(): void
+    {
+        $account = $this->accountWithBalance(100);
+        $holdId = HoldId::generate();
+        $account->placeHold($holdId, new Money(30, 'EUR'), $this->now);
+        $account->releaseEvents();
+
+        $account->releaseHold($holdId, $this->now);
+
+        $events = $account->releaseEvents();
+        self::assertCount(1, $events);
+        $event = $events[0];
+        self::assertInstanceOf(HoldReleased::class, $event);
+        self::assertTrue($event->holdId->equals($holdId));
+        self::assertTrue($account->balance->equals(new Money(100, 'EUR')));
+        self::assertTrue($account->held->equals(new Money(0, 'EUR')));
+    }
+
+    public function testReleasingUnknownHoldIsRejected(): void
+    {
+        $account = $this->accountWithBalance(100);
+
+        $this->expectException(HoldNotFoundException::class);
+
+        $account->releaseHold(HoldId::generate(), $this->now);
+    }
+
+    public function testCaptureHoldDebitsBalanceAndRemovesHold(): void
+    {
+        $account = $this->accountWithBalance(100);
+        $holdId = HoldId::generate();
+        $account->placeHold($holdId, new Money(30, 'EUR'), $this->now);
+        $account->releaseEvents();
+
+        $account->captureHold($holdId, $this->now);
+
+        $events = $account->releaseEvents();
+        self::assertCount(1, $events);
+        $event = $events[0];
+        self::assertInstanceOf(HoldCaptured::class, $event);
+        self::assertTrue($event->holdId->equals($holdId));
+        self::assertTrue($account->balance->equals(new Money(70, 'EUR')));
+        self::assertTrue($account->held->equals(new Money(0, 'EUR')));
+        self::assertTrue($account->available()->equals(new Money(70, 'EUR')));
+    }
+
+    public function testCapturingUnknownHoldIsRejected(): void
+    {
+        $account = $this->accountWithBalance(100);
+
+        $this->expectException(HoldNotFoundException::class);
+
+        $account->captureHold(HoldId::generate(), $this->now);
+    }
+
+    public function testHoldLifecycleIsReplayedFromHistory(): void
+    {
+        $captured = HoldId::generate();
+        $released = HoldId::generate();
+        $account = Account::reconstitute([
+            new AccountOpened($this->accountId, $this->ownerId, 'EUR', $this->now),
+            new MoneyDeposited($this->accountId, new Money(100, 'EUR'), $this->now),
+            new HoldPlaced($this->accountId, $captured, new Money(30, 'EUR'), $this->now),
+            new HoldPlaced($this->accountId, $released, new Money(20, 'EUR'), $this->now),
+            new HoldReleased($this->accountId, $released, $this->now),
+            new HoldCaptured($this->accountId, $captured, $this->now),
+        ]);
+
+        self::assertSame(6, $account->version);
+        self::assertTrue($account->balance->equals(new Money(70, 'EUR')));
+        self::assertTrue($account->held->equals(new Money(0, 'EUR')));
+    }
+
+    private function accountWithBalance(int $amount): Account
+    {
+        $account = $this->openAccount();
+        $account->deposit(new Money($amount, 'EUR'), $this->now);
+        $account->releaseEvents();
+        return $account;
+    }
+
+    /**
+     * @param class-string<\Throwable> $exception
+     * @param callable(): void $command
+     */
+    private function assertRejected(string $exception, callable $command): void
+    {
+        try {
+            $command();
+        } catch (\Throwable $e) {
+            self::assertInstanceOf($exception, $e);
+            return;
+        }
+        self::fail('Expected ' . $exception);
     }
 
     private function openAccount(): Account
