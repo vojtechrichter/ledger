@@ -34,6 +34,7 @@ abstract class AbstractAggregateRoot
     {
         $events = $this->recordedEvents;
         $this->recordedEvents = [];
+        $this->version += count($events);
         return $events;
     }
 

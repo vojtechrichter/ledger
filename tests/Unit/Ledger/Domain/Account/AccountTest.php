@@ -102,11 +102,20 @@ final class AccountTest extends TestCase
         Account::reconstitute([new class implements DomainEventInterface {}]);
     }
 
-    public function testFreshlyOpenedAccountHasVersionZero(): void
+    public function testVersionCountsOnlyReleasedEvents(): void
     {
         $account = Account::open($this->accountId, $this->ownerId, 'EUR', $this->now);
-
         self::assertSame(0, $account->version);
+
+        $account->releaseEvents();
+        self::assertSame(1, $account->version);
+
+        $account->deposit(new Money(10, 'EUR'), $this->now);
+        $account->deposit(new Money(10, 'EUR'), $this->now);
+        self::assertSame(1, $account->version);
+
+        $account->releaseEvents();
+        self::assertSame(3, $account->version);
     }
 
     public function testDepositRecordsMoneyDepositedAndRaisesBalance(): void
