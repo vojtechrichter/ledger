@@ -4,12 +4,18 @@ declare(strict_types=1);
 
 namespace Ledger\Domain\Account;
 
+use Ledger\Domain\Account\Event\AccountClosed;
+use Ledger\Domain\Account\Event\AccountFrozen;
 use Ledger\Domain\Account\Event\AccountOpened;
+use Ledger\Domain\Account\Event\AccountUnfrozen;
 use Ledger\Domain\Account\Event\HoldCaptured;
 use Ledger\Domain\Account\Event\HoldPlaced;
 use Ledger\Domain\Account\Event\HoldReleased;
 use Ledger\Domain\Account\Event\MoneyDeposited;
 use Ledger\Domain\Account\Event\MoneyWithdrawn;
+use Ledger\Domain\Exception\AccountAlreadyClosedException;
+use Ledger\Domain\Exception\AccountNotEmptyException;
+use Ledger\Domain\Exception\AccountNotFrozenException;
 use Ledger\Domain\Exception\AccountNotOpenException;
 use Ledger\Domain\Exception\HoldAlreadyPlacedException;
 use Ledger\Domain\Exception\HoldNotFoundException;
@@ -79,6 +85,31 @@ final class Account extends AbstractAggregateRoot
         $this->recordThat(new HoldCaptured($this->accountId, $holdId, $now));
     }
 
+    public function freeze(\DateTimeImmutable $now): void
+    {
+        $this->assertOpen();
+        $this->recordThat(new AccountFrozen($this->accountId, $now));
+    }
+
+    public function unfreeze(\DateTimeImmutable $now): void
+    {
+        if ($this->accountStatus !== AccountStatus::Frozen) {
+            throw AccountNotFrozenException::for($this->accountId, $this->accountStatus);
+        }
+        $this->recordThat(new AccountUnfrozen($this->accountId, $now));
+    }
+
+    public function close(\DateTimeImmutable $now): void
+    {
+        if ($this->accountStatus === AccountStatus::Closed) {
+            throw AccountAlreadyClosedException::for($this->accountId);
+        }
+        if ($this->balance->amount !== 0) {
+            throw AccountNotEmptyException::for($this->accountId, $this->balance);
+        }
+        $this->recordThat(new AccountClosed($this->accountId, $now));
+    }
+
     public function available(): Money
     {
         return $this->balance->subtract($this->held);
@@ -93,6 +124,9 @@ final class Account extends AbstractAggregateRoot
             $event instanceof HoldPlaced => $this->holds[$event->holdId->value] = $event->amount,
             $event instanceof HoldReleased => $this->forgetHold($event->holdId),
             $event instanceof HoldCaptured => $this->applyHoldCaptured($event),
+            $event instanceof AccountFrozen => $this->accountStatus = AccountStatus::Frozen,
+            $event instanceof AccountUnfrozen => $this->accountStatus = AccountStatus::Open,
+            $event instanceof AccountClosed => $this->accountStatus = AccountStatus::Closed,
             default => throw UnhandledEventException::for($this, $event),
         };
     }

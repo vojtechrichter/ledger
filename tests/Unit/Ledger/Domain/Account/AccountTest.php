@@ -7,7 +7,10 @@ namespace Tests\Unit\Ledger\Domain\Account;
 use Ledger\Domain\Account\Account;
 use Ledger\Domain\Account\AccountId;
 use Ledger\Domain\Account\AccountStatus;
+use Ledger\Domain\Account\Event\AccountClosed;
+use Ledger\Domain\Account\Event\AccountFrozen;
 use Ledger\Domain\Account\Event\AccountOpened;
+use Ledger\Domain\Account\Event\AccountUnfrozen;
 use Ledger\Domain\Account\Event\HoldCaptured;
 use Ledger\Domain\Account\Event\HoldPlaced;
 use Ledger\Domain\Account\Event\HoldReleased;
@@ -15,6 +18,10 @@ use Ledger\Domain\Account\Event\MoneyDeposited;
 use Ledger\Domain\Account\Event\MoneyWithdrawn;
 use Ledger\Domain\Account\HoldId;
 use Ledger\Domain\Account\OwnerId;
+use Ledger\Domain\Exception\AccountAlreadyClosedException;
+use Ledger\Domain\Exception\AccountNotEmptyException;
+use Ledger\Domain\Exception\AccountNotFrozenException;
+use Ledger\Domain\Exception\AccountNotOpenException;
 use Ledger\Domain\Exception\HoldAlreadyPlacedException;
 use Ledger\Domain\Exception\HoldNotFoundException;
 use Ledger\Domain\Exception\InsufficientFundsException;
@@ -357,6 +364,145 @@ final class AccountTest extends TestCase
         self::assertSame(6, $account->version);
         self::assertTrue($account->balance->equals(new Money(70, 'EUR')));
         self::assertTrue($account->held->equals(new Money(0, 'EUR')));
+    }
+
+    public function testFreezeRecordsAccountFrozen(): void
+    {
+        $account = $this->openAccount();
+
+        $account->freeze($this->now);
+
+        $events = $account->releaseEvents();
+        self::assertCount(1, $events);
+        $event = $events[0];
+        self::assertInstanceOf(AccountFrozen::class, $event);
+        self::assertTrue($event->accountId->equals($this->accountId));
+        self::assertSame($this->now, $event->occurredAt);
+        self::assertSame(AccountStatus::Frozen, $account->accountStatus);
+    }
+
+    public function testFrozenAccountRejectsMoneyMovements(): void
+    {
+        $account = $this->accountWithBalance(100);
+        $account->freeze($this->now);
+        $account->releaseEvents();
+
+        $this->assertRejected(AccountNotOpenException::class, fn () => $account->deposit(new Money(10, 'EUR'), $this->now));
+        $this->assertRejected(AccountNotOpenException::class, fn () => $account->withdraw(new Money(10, 'EUR'), $this->now));
+        $this->assertRejected(AccountNotOpenException::class, fn () => $account->placeHold(HoldId::generate(), new Money(10, 'EUR'), $this->now));
+
+        self::assertSame([], $account->releaseEvents());
+    }
+
+    public function testFrozenAccountStillAllowsHoldsToBeReleasedAndCaptured(): void
+    {
+        $account = $this->accountWithBalance(100);
+        $released = HoldId::generate();
+        $captured = HoldId::generate();
+        $account->placeHold($released, new Money(30, 'EUR'), $this->now);
+        $account->placeHold($captured, new Money(20, 'EUR'), $this->now);
+        $account->freeze($this->now);
+
+        $account->releaseHold($released, $this->now);
+        $account->captureHold($captured, $this->now);
+
+        self::assertTrue($account->balance->equals(new Money(80, 'EUR')));
+        self::assertTrue($account->held->equals(new Money(0, 'EUR')));
+    }
+
+    public function testFreezingANonOpenAccountIsRejected(): void
+    {
+        $account = $this->openAccount();
+        $account->freeze($this->now);
+
+        $this->expectException(AccountNotOpenException::class);
+
+        $account->freeze($this->now);
+    }
+
+    public function testUnfreezeReopensTheAccount(): void
+    {
+        $account = $this->openAccount();
+        $account->freeze($this->now);
+        $account->releaseEvents();
+
+        $account->unfreeze($this->now);
+
+        $events = $account->releaseEvents();
+        self::assertCount(1, $events);
+        self::assertInstanceOf(AccountUnfrozen::class, $events[0]);
+        self::assertSame(AccountStatus::Open, $account->accountStatus);
+        $account->deposit(new Money(10, 'EUR'), $this->now);
+        self::assertTrue($account->balance->equals(new Money(10, 'EUR')));
+    }
+
+    public function testUnfreezingAnOpenAccountIsRejected(): void
+    {
+        $account = $this->openAccount();
+
+        $this->expectException(AccountNotFrozenException::class);
+
+        $account->unfreeze($this->now);
+    }
+
+    public function testCloseRecordsAccountClosed(): void
+    {
+        $account = $this->openAccount();
+
+        $account->close($this->now);
+
+        $events = $account->releaseEvents();
+        self::assertCount(1, $events);
+        $event = $events[0];
+        self::assertInstanceOf(AccountClosed::class, $event);
+        self::assertTrue($event->accountId->equals($this->accountId));
+        self::assertSame($this->now, $event->occurredAt);
+        self::assertSame(AccountStatus::Closed, $account->accountStatus);
+    }
+
+    public function testClosingAnAccountWithBalanceIsRejected(): void
+    {
+        $account = $this->accountWithBalance(1);
+
+        $this->expectException(AccountNotEmptyException::class);
+
+        $account->close($this->now);
+    }
+
+    public function testClosingTwiceIsRejected(): void
+    {
+        $account = $this->openAccount();
+        $account->close($this->now);
+
+        $this->expectException(AccountAlreadyClosedException::class);
+
+        $account->close($this->now);
+    }
+
+    public function testClosedAccountRejectsMoneyMovementsAndFreezing(): void
+    {
+        $account = $this->openAccount();
+        $account->close($this->now);
+        $account->releaseEvents();
+
+        $this->assertRejected(AccountNotOpenException::class, fn () => $account->deposit(new Money(10, 'EUR'), $this->now));
+        $this->assertRejected(AccountNotOpenException::class, fn () => $account->freeze($this->now));
+        $this->assertRejected(AccountNotFrozenException::class, fn () => $account->unfreeze($this->now));
+
+        self::assertSame([], $account->releaseEvents());
+    }
+
+    public function testStatusChangesAreReplayedFromHistory(): void
+    {
+        $account = Account::reconstitute([
+            new AccountOpened($this->accountId, $this->ownerId, 'EUR', $this->now),
+            new AccountFrozen($this->accountId, $this->now),
+            new AccountUnfrozen($this->accountId, $this->now),
+            new AccountClosed($this->accountId, $this->now),
+        ]);
+
+        self::assertSame(4, $account->version);
+        self::assertSame(AccountStatus::Closed, $account->accountStatus);
     }
 
     private function accountWithBalance(int $amount): Account
