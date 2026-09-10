@@ -1,0 +1,42 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use Doctrine\DBAL\DriverManager;
+use Doctrine\DBAL\Tools\DsnParser;
+
+require __DIR__ . '/../vendor/autoload.php';
+
+$url = getenv('DATABASE_URL');
+if ($url === false) {
+    $env = parse_ini_file(__DIR__ . '/../.env');
+    $url = $env['DATABASE_URL'] ?? null;
+}
+if (!is_string($url)) {
+    fwrite(STDERR, "DATABASE_URL is not set.\n");
+    exit(1);
+}
+
+$connection = DriverManager::getConnection(new DsnParser()->parse($url));
+$connection->executeStatement(
+    'CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())',
+);
+
+/** @var list<string> $applied */
+$applied = $connection->fetchFirstColumn('SELECT name FROM schema_migrations');
+$files = glob(__DIR__ . '/../migrations/*.sql') ?: [];
+sort($files);
+
+foreach ($files as $file) {
+    $name = basename($file, '.sql');
+    if (in_array($name, $applied, true)) {
+        continue;
+    }
+    $connection->transactional(static function () use ($connection, $file, $name): void {
+        $connection->executeStatement((string) file_get_contents($file));
+        $connection->insert('schema_migrations', ['name' => $name]);
+    });
+    echo "applied $name\n";
+}
+echo "up to date\n";
