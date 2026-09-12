@@ -7,8 +7,10 @@ namespace Ledger\Domain\Account\Event;
 use Ledger\Domain\Account\AccountId;
 use Ledger\Domain\Account\HoldId;
 use Shared\Domain\DomainEventInterface;
+use Shared\Domain\EventType;
 use Shared\Domain\Money;
 
+#[EventType('ledger.hold_placed')]
 final readonly class HoldPlaced implements DomainEventInterface
 {
     public function __construct(

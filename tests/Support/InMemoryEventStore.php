@@ -13,6 +13,7 @@ final class InMemoryEventStore implements EventStoreInterface
     /** @var array<string, list<DomainEventInterface>> */
     private array $streams = [];
 
+    #[\NoDiscard]
     #[\Override]
     public function append(string $streamId, int $expectedVersion, array $events): int
     {

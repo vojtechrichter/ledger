@@ -99,7 +99,11 @@ final class AccountTest extends TestCase
     {
         $this->expectException(UnhandledEventException::class);
 
-        Account::reconstitute([new class implements DomainEventInterface {}]);
+        Account::reconstitute([new class ($this->now) implements DomainEventInterface {
+            public function __construct(public \DateTimeImmutable $occurredAt)
+            {
+            }
+        }]);
     }
 
     public function testVersionCountsOnlyReleasedEvents(): void

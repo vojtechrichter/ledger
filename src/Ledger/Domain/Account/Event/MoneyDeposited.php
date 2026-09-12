@@ -6,8 +6,10 @@ namespace Ledger\Domain\Account\Event;
 
 use Ledger\Domain\Account\AccountId;
 use Shared\Domain\DomainEventInterface;
+use Shared\Domain\EventType;
 use Shared\Domain\Money;
 
+#[EventType('ledger.money_deposited')]
 final readonly class MoneyDeposited implements DomainEventInterface
 {
     public function __construct(
